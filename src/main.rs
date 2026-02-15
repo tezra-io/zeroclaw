@@ -304,7 +304,7 @@ async fn main() -> Result<()> {
             provider,
             model,
             temperature,
-        } => agent::run(config, message, provider, model, temperature).await,
+        } => agent::run_with_tools(config, message, provider, model, temperature).await,
 
         Commands::Gateway { port, host } => {
             if port == 0 {
