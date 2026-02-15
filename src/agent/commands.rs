@@ -4,7 +4,7 @@ use crate::config::Config;
 use anyhow::Result;
 
 #[allow(clippy::too_many_lines)]
-pub fn handle_command(command: crate::AgentSubCommands, config: &Config) -> Result<()> {
+pub async fn handle_command(command: crate::AgentSubCommands, config: &Config) -> Result<()> {
     let registry = AgentRegistry::from_config(config);
 
     match command {
@@ -51,12 +51,24 @@ pub fn handle_command(command: crate::AgentSubCommands, config: &Config) -> Resu
             from_description,
         } => {
             if let Some(desc) = from_description {
-                // Phase 4 feature — stubbed for now
-                println!("AI-powered agent generation is not yet implemented.");
-                println!("Description: {desc}");
+                println!(
+                    "  {} Generating agent from: \"{desc}\"",
+                    console::style("⟳").cyan().bold()
+                );
+                let definition = super::generator::generate_definition(&desc, config).await?;
+
                 println!();
-                println!("Use flag-based creation instead:");
-                println!("  zeroclaw agent create --name my-agent --persistent");
+                println!("Generated agent definition:");
+                println!("{}", console::style("─".repeat(40)).dim());
+                println!("{}", definition.to_markdown());
+                println!("{}", console::style("─".repeat(40)).dim());
+
+                registry.create(&definition)?;
+                println!(
+                    "  {} Created agent '{}'",
+                    console::style("✓").green().bold(),
+                    definition.name
+                );
                 return Ok(());
             }
 

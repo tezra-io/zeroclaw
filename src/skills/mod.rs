@@ -43,6 +43,29 @@ pub struct SkillTool {
     pub args: HashMap<String, String>,
 }
 
+/// Lightweight skill index entry for agent matching
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillIndexEntry {
+    pub name: String,
+    pub description: String,
+    pub tools: Vec<String>,
+    pub tags: Vec<String>,
+}
+
+/// Build a lightweight skill index for agent matching (no disk I/O, just transforms)
+pub fn build_skill_index(workspace_dir: &Path) -> Vec<SkillIndexEntry> {
+    let skills = load_skills(workspace_dir);
+    skills
+        .iter()
+        .map(|s| SkillIndexEntry {
+            name: s.name.clone(),
+            description: s.description.clone(),
+            tools: s.tools.iter().map(|t| t.name.clone()).collect(),
+            tags: s.tags.clone(),
+        })
+        .collect()
+}
+
 /// Skill manifest parsed from SKILL.toml
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SkillManifest {
@@ -904,6 +927,59 @@ description = "Bare minimum"
         let skills = load_skills(dir.path());
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "from-toml"); // TOML takes priority
+    }
+
+    #[test]
+    fn build_skill_index_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = build_skill_index(dir.path());
+        assert!(index.is_empty());
+    }
+
+    #[test]
+    fn build_skill_index_from_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join("skills");
+        let skill_dir = skills_dir.join("indexed");
+        fs::create_dir_all(&skill_dir).unwrap();
+
+        fs::write(
+            skill_dir.join("SKILL.toml"),
+            r#"
+[skill]
+name = "indexed"
+description = "An indexed skill"
+tags = ["test", "index"]
+
+[[tools]]
+name = "my_tool"
+description = "Does stuff"
+kind = "shell"
+command = "echo hi"
+"#,
+        )
+        .unwrap();
+
+        let index = build_skill_index(dir.path());
+        assert_eq!(index.len(), 1);
+        assert_eq!(index[0].name, "indexed");
+        assert_eq!(index[0].description, "An indexed skill");
+        assert_eq!(index[0].tools, vec!["my_tool"]);
+        assert_eq!(index[0].tags, vec!["test", "index"]);
+    }
+
+    #[test]
+    fn skill_index_entry_serde() {
+        let entry = SkillIndexEntry {
+            name: "test".into(),
+            description: "A test".into(),
+            tools: vec!["tool1".into()],
+            tags: vec!["tag1".into()],
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: SkillIndexEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "test");
+        assert_eq!(parsed.tools, vec!["tool1"]);
     }
 }
 

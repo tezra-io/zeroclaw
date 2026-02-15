@@ -1,6 +1,7 @@
 pub mod bus;
 pub mod commands;
 pub mod definition;
+pub mod generator;
 pub mod loop_;
 pub mod registry;
 

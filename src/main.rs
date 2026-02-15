@@ -370,7 +370,7 @@ async fn main() -> Result<()> {
             temperature,
         } => {
             if let Some(subcmd) = agent_command {
-                agent::commands::handle_command(subcmd, &config)
+                agent::commands::handle_command(subcmd, &config).await
             } else {
                 agent::run_with_tools(config, message, provider, model, temperature).await
             }

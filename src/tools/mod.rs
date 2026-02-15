@@ -1,3 +1,4 @@
+pub mod agent_manage;
 pub mod browser;
 pub mod browser_open;
 pub mod composio;
@@ -71,6 +72,21 @@ pub fn all_tools(
         }
     }
 
+    tools
+}
+
+/// Create tool registry with agent management capabilities.
+/// Used by the daemon and agent runner when bus/registry are available.
+pub fn all_tools_with_agents(
+    security: &Arc<SecurityPolicy>,
+    memory: Arc<dyn Memory>,
+    composio_key: Option<&str>,
+    browser_config: &crate::config::BrowserConfig,
+    registry: Arc<crate::agent::registry::AgentRegistry>,
+    bus: Arc<crate::agent::bus::AgentBus>,
+) -> Vec<Box<dyn Tool>> {
+    let mut tools = all_tools(security, memory, composio_key, browser_config);
+    tools.push(Box::new(agent_manage::AgentManageTool::new(registry, bus)));
     tools
 }
 
@@ -223,5 +239,56 @@ mod tests {
         let parsed: ToolSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, "test");
         assert_eq!(parsed.description, "A test tool");
+    }
+
+    #[test]
+    fn all_tools_with_agents_includes_agent_manage() {
+        let tmp = TempDir::new().unwrap();
+        let security = Arc::new(SecurityPolicy::default());
+        let mem_cfg = MemoryConfig {
+            backend: "markdown".into(),
+            ..MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> =
+            Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+        let browser = BrowserConfig {
+            enabled: false,
+            allowed_domains: vec![],
+            session_name: None,
+        };
+
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        let registry = Arc::new(crate::agent::registry::AgentRegistry::new(&agents_dir));
+        let bus = Arc::new(crate::agent::bus::AgentBus::new());
+
+        let tools = all_tools_with_agents(&security, mem, None, &browser, registry, bus);
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(names.contains(&"agent_manage"));
+        // Should still have all the base tools
+        assert!(names.contains(&"shell"));
+        assert!(names.contains(&"memory_store"));
+    }
+
+    #[test]
+    fn all_tools_unchanged_without_agents() {
+        let tmp = TempDir::new().unwrap();
+        let security = Arc::new(SecurityPolicy::default());
+        let mem_cfg = MemoryConfig {
+            backend: "markdown".into(),
+            ..MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> =
+            Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+        let browser = BrowserConfig {
+            enabled: false,
+            allowed_domains: vec![],
+            session_name: None,
+        };
+
+        let tools = all_tools(&security, mem, None, &browser);
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        // Should NOT contain agent_manage
+        assert!(!names.contains(&"agent_manage"));
     }
 }
