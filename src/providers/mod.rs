@@ -2,14 +2,15 @@ pub mod anthropic;
 pub mod compatible;
 pub mod ollama;
 pub mod openai;
+pub mod openai_format;
 pub mod openrouter;
 pub mod reliable;
 pub mod traits;
 
-pub use traits::Provider;
+pub use traits::{ChatProvider, Provider};
 
 use compatible::{AuthStyle, OpenAiCompatibleProvider};
-use reliable::ReliableProvider;
+use reliable::{ReliableChatProvider, ReliableProvider};
 
 /// Factory: create the right provider from config
 #[allow(clippy::too_many_lines)]
@@ -142,6 +143,145 @@ pub fn create_resilient_provider(
     }
 
     Ok(Box::new(ReliableProvider::new(
+        providers,
+        reliability.provider_retries,
+        reliability.provider_backoff_ms,
+    )))
+}
+
+/// Factory: create a `ChatProvider` (structured API with tool support) from config.
+#[allow(clippy::too_many_lines)]
+pub fn create_chat_provider(
+    name: &str,
+    api_key: Option<&str>,
+) -> anyhow::Result<Box<dyn ChatProvider>> {
+    match name {
+        // ── Primary providers (custom implementations) ───────
+        "openrouter" => Ok(Box::new(openrouter::OpenRouterProvider::new(api_key))),
+        "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(api_key))),
+        "openai" => Ok(Box::new(openai::OpenAiProvider::new(api_key))),
+        "ollama" => Ok(Box::new(ollama::OllamaProvider::new(
+            api_key.filter(|k| !k.is_empty()),
+        ))),
+
+        // ── OpenAI-compatible providers ──────────────────────
+        "venice" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Venice", "https://api.venice.ai", api_key, AuthStyle::Bearer,
+        ))),
+        "vercel" | "vercel-ai" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Vercel AI Gateway", "https://api.vercel.ai", api_key, AuthStyle::Bearer,
+        ))),
+        "cloudflare" | "cloudflare-ai" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Cloudflare AI Gateway",
+            "https://gateway.ai.cloudflare.com/v1",
+            api_key,
+            AuthStyle::Bearer,
+        ))),
+        "moonshot" | "kimi" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Moonshot", "https://api.moonshot.cn", api_key, AuthStyle::Bearer,
+        ))),
+        "synthetic" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Synthetic", "https://api.synthetic.com", api_key, AuthStyle::Bearer,
+        ))),
+        "opencode" | "opencode-zen" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "OpenCode Zen", "https://api.opencode.ai", api_key, AuthStyle::Bearer,
+        ))),
+        "zai" | "z.ai" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Z.AI", "https://api.z.ai", api_key, AuthStyle::Bearer,
+        ))),
+        "glm" | "zhipu" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "GLM", "https://open.bigmodel.cn/api/paas", api_key, AuthStyle::Bearer,
+        ))),
+        "minimax" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "MiniMax", "https://api.minimax.chat", api_key, AuthStyle::Bearer,
+        ))),
+        "bedrock" | "aws-bedrock" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Amazon Bedrock",
+            "https://bedrock-runtime.us-east-1.amazonaws.com",
+            api_key,
+            AuthStyle::Bearer,
+        ))),
+        "qianfan" | "baidu" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Qianfan", "https://aip.baidubce.com", api_key, AuthStyle::Bearer,
+        ))),
+
+        // ── Extended ecosystem (community favorites) ─────────
+        "groq" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Groq", "https://api.groq.com/openai", api_key, AuthStyle::Bearer,
+        ))),
+        "mistral" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Mistral", "https://api.mistral.ai", api_key, AuthStyle::Bearer,
+        ))),
+        "xai" | "grok" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "xAI", "https://api.x.ai", api_key, AuthStyle::Bearer,
+        ))),
+        "deepseek" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "DeepSeek", "https://api.deepseek.com", api_key, AuthStyle::Bearer,
+        ))),
+        "together" | "together-ai" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Together AI", "https://api.together.xyz", api_key, AuthStyle::Bearer,
+        ))),
+        "fireworks" | "fireworks-ai" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Fireworks AI", "https://api.fireworks.ai/inference", api_key, AuthStyle::Bearer,
+        ))),
+        "perplexity" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Perplexity", "https://api.perplexity.ai", api_key, AuthStyle::Bearer,
+        ))),
+        "cohere" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "Cohere", "https://api.cohere.com/compatibility", api_key, AuthStyle::Bearer,
+        ))),
+
+        // ── Bring Your Own Provider (custom URL) ───────────
+        name if name.starts_with("custom:") => {
+            let base_url = name.strip_prefix("custom:").unwrap_or("");
+            if base_url.is_empty() {
+                anyhow::bail!("Custom provider requires a URL. Format: custom:https://your-api.com");
+            }
+            Ok(Box::new(OpenAiCompatibleProvider::new(
+                "Custom",
+                base_url,
+                api_key,
+                AuthStyle::Bearer,
+            )))
+        }
+
+        _ => anyhow::bail!(
+            "Unknown provider: {name}. Check README for supported providers or run `zeroclaw onboard --interactive` to reconfigure.\n\
+             Tip: Use \"custom:https://your-api.com\" for any OpenAI-compatible endpoint."
+        ),
+    }
+}
+
+/// Create chat-provider chain with retry and fallback behavior.
+pub fn create_resilient_chat_provider(
+    primary_name: &str,
+    api_key: Option<&str>,
+    reliability: &crate::config::ReliabilityConfig,
+) -> anyhow::Result<Box<dyn ChatProvider>> {
+    let mut providers: Vec<(String, Box<dyn ChatProvider>)> = Vec::new();
+
+    providers.push((
+        primary_name.to_string(),
+        create_chat_provider(primary_name, api_key)?,
+    ));
+
+    for fallback in &reliability.fallback_providers {
+        if fallback == primary_name || providers.iter().any(|(name, _)| name == fallback) {
+            continue;
+        }
+
+        match create_chat_provider(fallback, api_key) {
+            Ok(provider) => providers.push((fallback.clone(), provider)),
+            Err(e) => {
+                tracing::warn!(
+                    fallback_provider = fallback,
+                    "Ignoring invalid fallback chat provider: {e}"
+                );
+            }
+        }
+    }
+
+    Ok(Box::new(ReliableChatProvider::new(
         providers,
         reliability.provider_retries,
         reliability.provider_backoff_ms,
@@ -393,5 +533,100 @@ mod tests {
                 "Provider '{name}' should create successfully"
             );
         }
+    }
+
+    // ── ChatProvider factory ──────────────────────────────────
+
+    #[test]
+    fn chat_factory_all_providers_create_successfully() {
+        let providers = [
+            "openrouter",
+            "anthropic",
+            "openai",
+            "ollama",
+            "venice",
+            "vercel",
+            "cloudflare",
+            "moonshot",
+            "synthetic",
+            "opencode",
+            "zai",
+            "glm",
+            "minimax",
+            "bedrock",
+            "qianfan",
+            "groq",
+            "mistral",
+            "xai",
+            "deepseek",
+            "together",
+            "fireworks",
+            "perplexity",
+            "cohere",
+        ];
+        for name in providers {
+            assert!(
+                create_chat_provider(name, Some("test-key")).is_ok(),
+                "ChatProvider '{name}' should create successfully"
+            );
+        }
+    }
+
+    #[test]
+    fn chat_factory_unknown_provider_errors() {
+        assert!(create_chat_provider("nonexistent", None).is_err());
+    }
+
+    #[test]
+    fn chat_factory_custom_url() {
+        assert!(create_chat_provider("custom:https://my-llm.example.com", Some("key")).is_ok());
+    }
+
+    #[test]
+    fn chat_factory_custom_empty_url_errors() {
+        assert!(create_chat_provider("custom:", None).is_err());
+    }
+
+    #[test]
+    fn resilient_chat_provider_creates_successfully() {
+        let reliability = crate::config::ReliabilityConfig {
+            provider_retries: 1,
+            provider_backoff_ms: 100,
+            fallback_providers: vec!["openai".into()],
+            channel_initial_backoff_secs: 2,
+            channel_max_backoff_secs: 60,
+            scheduler_poll_secs: 15,
+            scheduler_retries: 2,
+        };
+        let provider = create_resilient_chat_provider("openrouter", Some("sk-test"), &reliability);
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn resilient_chat_provider_ignores_duplicate_and_invalid_fallbacks() {
+        let reliability = crate::config::ReliabilityConfig {
+            provider_retries: 1,
+            provider_backoff_ms: 100,
+            fallback_providers: vec![
+                "openrouter".into(),
+                "nonexistent-provider".into(),
+                "openai".into(),
+                "openai".into(),
+            ],
+            channel_initial_backoff_secs: 2,
+            channel_max_backoff_secs: 60,
+            scheduler_poll_secs: 15,
+            scheduler_retries: 2,
+        };
+        let provider = create_resilient_chat_provider("openrouter", Some("sk-test"), &reliability);
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn resilient_chat_provider_errors_for_invalid_primary() {
+        let reliability = crate::config::ReliabilityConfig::default();
+        let provider =
+            create_resilient_chat_provider("totally-invalid", Some("sk-test"), &reliability);
+        assert!(provider.is_err());
     }
 }

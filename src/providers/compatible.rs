@@ -2,7 +2,9 @@
 //! Most LLM APIs follow the same `/v1/chat/completions` format.
 //! This module provides a single implementation that works for all of them.
 
-use crate::providers::traits::Provider;
+use crate::providers::openai_format;
+use crate::providers::traits::{ChatProvider, Provider};
+use crate::types::{ChatMessage, ChatResponse, ToolSpec};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -43,6 +45,23 @@ impl OpenAiCompatibleProvider {
                 .unwrap_or_else(|_| Client::new()),
         }
     }
+
+    fn require_key(&self) -> anyhow::Result<&str> {
+        self.api_key.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} API key not set. Run `zeroclaw onboard` or set the appropriate env var.",
+                self.name
+            )
+        })
+    }
+
+    fn apply_auth(&self, req: reqwest::RequestBuilder, api_key: &str) -> reqwest::RequestBuilder {
+        match &self.auth_header {
+            AuthStyle::Bearer => req.header("Authorization", format!("Bearer {api_key}")),
+            AuthStyle::XApiKey => req.header("x-api-key", api_key),
+            AuthStyle::Custom(header) => req.header(header.as_str(), api_key),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -59,7 +78,7 @@ struct Message {
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatResponse {
+struct LegacyChatResponse {
     choices: Vec<Choice>,
 }
 
@@ -82,12 +101,7 @@ impl Provider for OpenAiCompatibleProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "{} API key not set. Run `zeroclaw onboard` or set the appropriate env var.",
-                self.name
-            )
-        })?;
+        let api_key = self.require_key()?;
 
         let mut messages = Vec::new();
 
@@ -110,21 +124,8 @@ impl Provider for OpenAiCompatibleProvider {
         };
 
         let url = format!("{}/v1/chat/completions", self.base_url);
-
-        let mut req = self.client.post(&url).json(&request);
-
-        match &self.auth_header {
-            AuthStyle::Bearer => {
-                req = req.header("Authorization", format!("Bearer {api_key}"));
-            }
-            AuthStyle::XApiKey => {
-                req = req.header("x-api-key", api_key.as_str());
-            }
-            AuthStyle::Custom(header) => {
-                req = req.header(header.as_str(), api_key.as_str());
-            }
-        }
-
+        let req = self.client.post(&url).json(&request);
+        let req = self.apply_auth(req, api_key);
         let response = req.send().await?;
 
         if !response.status().is_success() {
@@ -132,7 +133,7 @@ impl Provider for OpenAiCompatibleProvider {
             anyhow::bail!("{} API error: {error}", self.name);
         }
 
-        let chat_response: ChatResponse = response.json().await?;
+        let chat_response: LegacyChatResponse = response.json().await?;
 
         chat_response
             .choices
@@ -140,6 +141,40 @@ impl Provider for OpenAiCompatibleProvider {
             .next()
             .map(|c| c.message.content)
             .ok_or_else(|| anyhow::anyhow!("No response from {}", self.name))
+    }
+}
+
+#[async_trait]
+impl ChatProvider for OpenAiCompatibleProvider {
+    async fn chat_completion(
+        &self,
+        system_prompt: Option<&str>,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<ChatResponse> {
+        let api_key = self.require_key()?;
+
+        let request = openai_format::ChatCompletionRequest {
+            model: model.to_string(),
+            messages: openai_format::to_wire_messages(system_prompt, messages),
+            temperature,
+            tools: openai_format::to_wire_tools(tools),
+        };
+
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        let req = self.client.post(&url).json(&request);
+        let req = self.apply_auth(req, api_key);
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            let error = response.text().await?;
+            anyhow::bail!("{} API error: {error}", self.name);
+        }
+
+        let wire: openai_format::ChatCompletionResponse = response.json().await?;
+        openai_format::from_wire_response(wire)
     }
 }
 
@@ -184,6 +219,19 @@ mod tests {
             .contains("Venice API key not set"));
     }
 
+    #[tokio::test]
+    async fn chat_completion_fails_without_key() {
+        let p = make_provider("Venice", "https://api.venice.ai", None);
+        let result = p
+            .chat_completion(None, &[], &[], "llama-3.3-70b", 0.7)
+            .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Venice API key not set"));
+    }
+
     #[test]
     fn request_serializes_correctly() {
         let req = ChatRequest {
@@ -209,14 +257,14 @@ mod tests {
     #[test]
     fn response_deserializes() {
         let json = r#"{"choices":[{"message":{"content":"Hello from Venice!"}}]}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: LegacyChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.choices[0].message.content, "Hello from Venice!");
     }
 
     #[test]
     fn response_empty_choices() {
         let json = r#"{"choices":[]}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: LegacyChatResponse = serde_json::from_str(json).unwrap();
         assert!(resp.choices.is_empty());
     }
 

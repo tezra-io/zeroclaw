@@ -1,4 +1,6 @@
-use crate::providers::traits::Provider;
+use crate::providers::openai_format;
+use crate::providers::traits::{ChatProvider, Provider};
+use crate::types::{ChatMessage, ChatResponse, ToolSpec};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -28,7 +30,7 @@ struct Options {
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatResponse {
+struct LegacyChatResponse {
     message: ResponseMessage,
 }
 
@@ -94,8 +96,41 @@ impl Provider for OllamaProvider {
             );
         }
 
-        let chat_response: ChatResponse = response.json().await?;
+        let chat_response: LegacyChatResponse = response.json().await?;
         Ok(chat_response.message.content)
+    }
+}
+
+#[async_trait]
+impl ChatProvider for OllamaProvider {
+    async fn chat_completion(
+        &self,
+        system_prompt: Option<&str>,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<ChatResponse> {
+        // Ollama supports OpenAI-compatible /v1/chat/completions endpoint
+        let request = openai_format::ChatCompletionRequest {
+            model: model.to_string(),
+            messages: openai_format::to_wire_messages(system_prompt, messages),
+            temperature,
+            tools: openai_format::to_wire_tools(tools),
+        };
+
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        let response = self.client.post(&url).json(&request).send().await?;
+
+        if !response.status().is_success() {
+            let error = response.text().await?;
+            anyhow::bail!(
+                "Ollama error: {error}. Is Ollama running? (brew install ollama && ollama serve)"
+            );
+        }
+
+        let wire: openai_format::ChatCompletionResponse = response.json().await?;
+        openai_format::from_wire_response(wire)
     }
 }
 
@@ -170,21 +205,21 @@ mod tests {
     #[test]
     fn response_deserializes() {
         let json = r#"{"message":{"role":"assistant","content":"Hello from Ollama!"}}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: LegacyChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.message.content, "Hello from Ollama!");
     }
 
     #[test]
     fn response_with_empty_content() {
         let json = r#"{"message":{"role":"assistant","content":""}}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: LegacyChatResponse = serde_json::from_str(json).unwrap();
         assert!(resp.message.content.is_empty());
     }
 
     #[test]
     fn response_with_multiline() {
         let json = r#"{"message":{"role":"assistant","content":"line1\nline2\nline3"}}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: LegacyChatResponse = serde_json::from_str(json).unwrap();
         assert!(resp.message.content.contains("line1"));
     }
 }

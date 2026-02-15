@@ -59,7 +59,7 @@ pub async fn run(
     } else {
         None
     };
-    let _tools = tools::all_tools(&security, mem.clone(), composio_key, &config.browser);
+    let registered_tools = tools::all_tools(&security, mem.clone(), composio_key, &config.browser);
 
     // ── Resolve provider ─────────────────────────────────────────
     let provider_name = provider_override
@@ -85,38 +85,17 @@ pub async fn run(
 
     // ── Build system prompt from workspace MD files (OpenClaw framework) ──
     let skills = crate::skills::load_skills(&config.workspace_dir);
-    let mut tool_descs: Vec<(&str, &str)> = vec![
-        (
-            "shell",
-            "Execute terminal commands. Use when: running local checks, build/test commands, diagnostics. Don't use when: a safer dedicated tool exists, or command is destructive without approval.",
-        ),
-        (
-            "file_read",
-            "Read file contents. Use when: inspecting project files, configs, logs. Don't use when: a targeted search is enough.",
-        ),
-        (
-            "file_write",
-            "Write file contents. Use when: applying focused edits, scaffolding files, updating docs/code. Don't use when: side effects are unclear or file ownership is uncertain.",
-        ),
-        (
-            "memory_store",
-            "Save to memory. Use when: preserving durable preferences, decisions, key context. Don't use when: information is transient/noisy/sensitive without need.",
-        ),
-        (
-            "memory_recall",
-            "Search memory. Use when: retrieving prior decisions, user preferences, historical context. Don't use when: answer is already in current context.",
-        ),
-        (
-            "memory_forget",
-            "Delete a memory entry. Use when: memory is incorrect/stale or explicitly requested for removal. Don't use when: impact is uncertain.",
-        ),
-    ];
-    if config.browser.enabled {
-        tool_descs.push((
-            "browser_open",
-            "Open approved HTTPS URLs in Brave Browser (allowlist-only, no scraping)",
-        ));
-    }
+    let tool_desc_owned: Vec<(String, String)> = registered_tools
+        .iter()
+        .map(|t| {
+            let spec = t.spec();
+            (spec.name, spec.description)
+        })
+        .collect();
+    let tool_descs: Vec<(&str, &str)> = tool_desc_owned
+        .iter()
+        .map(|(n, d)| (n.as_str(), d.as_str()))
+        .collect();
     let system_prompt = crate::channels::build_system_prompt(
         &config.workspace_dir,
         model_name,

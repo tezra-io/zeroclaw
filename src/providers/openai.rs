@@ -1,4 +1,6 @@
-use crate::providers::traits::Provider;
+use crate::providers::openai_format;
+use crate::providers::traits::{ChatProvider, Provider};
+use crate::types::{ChatMessage, ChatResponse, ToolSpec};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -22,7 +24,7 @@ struct Message {
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatResponse {
+struct LegacyChatResponse {
     choices: Vec<Choice>,
 }
 
@@ -47,6 +49,12 @@ impl OpenAiProvider {
                 .unwrap_or_else(|_| Client::new()),
         }
     }
+
+    fn require_key(&self) -> anyhow::Result<&str> {
+        self.api_key.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("OpenAI API key not set. Set OPENAI_API_KEY or edit config.toml.")
+        })
+    }
 }
 
 #[async_trait]
@@ -58,9 +66,7 @@ impl Provider for OpenAiProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("OpenAI API key not set. Set OPENAI_API_KEY or edit config.toml.")
-        })?;
+        let api_key = self.require_key()?;
 
         let mut messages = Vec::new();
 
@@ -95,7 +101,7 @@ impl Provider for OpenAiProvider {
             anyhow::bail!("OpenAI API error: {error}");
         }
 
-        let chat_response: ChatResponse = response.json().await?;
+        let chat_response: LegacyChatResponse = response.json().await?;
 
         chat_response
             .choices
@@ -103,6 +109,43 @@ impl Provider for OpenAiProvider {
             .next()
             .map(|c| c.message.content)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))
+    }
+}
+
+#[async_trait]
+impl ChatProvider for OpenAiProvider {
+    async fn chat_completion(
+        &self,
+        system_prompt: Option<&str>,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<ChatResponse> {
+        let api_key = self.require_key()?;
+
+        let request = openai_format::ChatCompletionRequest {
+            model: model.to_string(),
+            messages: openai_format::to_wire_messages(system_prompt, messages),
+            temperature,
+            tools: openai_format::to_wire_tools(tools),
+        };
+
+        let response = self
+            .client
+            .post("https://api.openai.com/v1/chat/completions")
+            .header("Authorization", format!("Bearer {api_key}"))
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error = response.text().await?;
+            anyhow::bail!("OpenAI API error: {error}");
+        }
+
+        let wire: openai_format::ChatCompletionResponse = response.json().await?;
+        openai_format::from_wire_response(wire)
     }
 }
 
@@ -145,6 +188,14 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[tokio::test]
+    async fn chat_completion_fails_without_key() {
+        let p = OpenAiProvider::new(None);
+        let result = p.chat_completion(None, &[], &[], "gpt-4o", 0.7).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("API key not set"));
+    }
+
     #[test]
     fn request_serializes_with_system_message() {
         let req = ChatRequest {
@@ -185,7 +236,7 @@ mod tests {
     #[test]
     fn response_deserializes_single_choice() {
         let json = r#"{"choices":[{"message":{"content":"Hi!"}}]}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: LegacyChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.choices.len(), 1);
         assert_eq!(resp.choices[0].message.content, "Hi!");
     }
@@ -193,14 +244,14 @@ mod tests {
     #[test]
     fn response_deserializes_empty_choices() {
         let json = r#"{"choices":[]}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: LegacyChatResponse = serde_json::from_str(json).unwrap();
         assert!(resp.choices.is_empty());
     }
 
     #[test]
     fn response_deserializes_multiple_choices() {
         let json = r#"{"choices":[{"message":{"content":"A"}},{"message":{"content":"B"}}]}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: LegacyChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.choices.len(), 2);
         assert_eq!(resp.choices[0].message.content, "A");
     }
@@ -208,7 +259,7 @@ mod tests {
     #[test]
     fn response_with_unicode() {
         let json = r#"{"choices":[{"message":{"content":"こんにちは 🦀"}}]}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: LegacyChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.choices[0].message.content, "こんにちは 🦀");
     }
 
@@ -216,7 +267,7 @@ mod tests {
     fn response_with_long_content() {
         let long = "x".repeat(100_000);
         let json = format!(r#"{{"choices":[{{"message":{{"content":"{long}"}}}}]}}"#);
-        let resp: ChatResponse = serde_json::from_str(&json).unwrap();
+        let resp: LegacyChatResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(resp.choices[0].message.content.len(), 100_000);
     }
 }

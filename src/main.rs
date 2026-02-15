@@ -34,6 +34,7 @@ mod service;
 mod skills;
 mod tools;
 mod tunnel;
+mod types;
 
 use config::Config;
 

@@ -207,6 +207,7 @@ fn has_supervised_channels(config: &Config) -> bool {
         || config.channels_config.slack.is_some()
         || config.channels_config.imessage.is_some()
         || config.channels_config.matrix.is_some()
+        || config.channels_config.whatsapp.is_some()
 }
 
 #[cfg(test)]
@@ -283,6 +284,18 @@ mod tests {
         config.channels_config.telegram = Some(crate::config::TelegramConfig {
             bot_token: "token".into(),
             allowed_users: vec![],
+        });
+        assert!(has_supervised_channels(&config));
+    }
+
+    #[test]
+    fn detects_whatsapp_as_supervised_channel() {
+        let mut config = Config::default();
+        config.channels_config.whatsapp = Some(crate::config::schema::WhatsAppConfig {
+            access_token: "tok".into(),
+            phone_number_id: "123".into(),
+            verify_token: "ver".into(),
+            allowed_numbers: vec![],
         });
         assert!(has_supervised_channels(&config));
     }
