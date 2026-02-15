@@ -88,8 +88,12 @@ enum Commands {
         memory: Option<String>,
     },
 
-    /// Start the AI agent loop
+    /// Start the AI agent loop or manage agents
+    #[command(args_conflicts_with_subcommands = true)]
     Agent {
+        #[command(subcommand)]
+        agent_command: Option<AgentSubCommands>,
+
         /// Single message mode (don't enter interactive mode)
         #[arg(short, long)]
         message: Option<String>,
@@ -251,6 +255,65 @@ enum IntegrationCommands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum AgentSubCommands {
+    /// List all defined agents
+    List,
+    /// Create a new agent
+    Create {
+        /// Agent name (required for flag-based creation)
+        #[arg(long)]
+        name: Option<String>,
+        /// Make agent persistent
+        #[arg(long)]
+        persistent: bool,
+        /// Skills to assign (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        skills: Option<Vec<String>>,
+        /// Memory isolation mode (isolated, shared-read, shared)
+        #[arg(long)]
+        memory: Option<String>,
+        /// Cron schedule expression
+        #[arg(long)]
+        schedule: Option<String>,
+        /// Allowed tools (comma-separated, empty = all)
+        #[arg(long, value_delimiter = ',')]
+        allowed_tools: Option<Vec<String>>,
+        /// Generate from natural language description (Phase 4)
+        #[arg(long)]
+        from_description: Option<String>,
+    },
+    /// Edit an agent definition ($EDITOR)
+    Edit {
+        /// Agent name
+        name: String,
+    },
+    /// Remove an agent
+    Remove {
+        /// Agent name
+        name: String,
+    },
+    /// Show agent status
+    Status {
+        /// Agent name
+        name: String,
+    },
+    /// Add a skill to an agent
+    SkillAdd {
+        /// Agent name
+        agent: String,
+        /// Skill name
+        skill: String,
+    },
+    /// Remove a skill from an agent
+    SkillRemove {
+        /// Agent name
+        agent: String,
+        /// Skill name
+        skill: String,
+    },
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
@@ -300,11 +363,18 @@ async fn main() -> Result<()> {
         Commands::Onboard { .. } => unreachable!(),
 
         Commands::Agent {
+            agent_command,
             message,
             provider,
             model,
             temperature,
-        } => agent::run_with_tools(config, message, provider, model, temperature).await,
+        } => {
+            if let Some(subcmd) = agent_command {
+                agent::commands::handle_command(subcmd, &config)
+            } else {
+                agent::run_with_tools(config, message, provider, model, temperature).await
+            }
+        }
 
         Commands::Gateway { port, host } => {
             if port == 0 {
