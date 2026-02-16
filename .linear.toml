@@ -1,0 +1,6 @@
+# linear cli
+# https://github.com/schpet/linear-cli
+
+workspace = "tezra-io"
+team_id = "TEZ"
+issue_sort = "manual"

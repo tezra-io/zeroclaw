@@ -67,7 +67,7 @@ pub async fn run(
     let provider_name = provider_override
         .as_deref()
         .or(config.default_provider.as_deref())
-        .unwrap_or("anthropic");
+        .unwrap_or("openrouter");
 
     let model_name = model_override
         .as_deref()
@@ -242,7 +242,7 @@ pub async fn run_with_tools(
     let provider_name = provider_override
         .as_deref()
         .or(config.default_provider.as_deref())
-        .unwrap_or("anthropic");
+        .unwrap_or("openrouter");
 
     let model_name = model_override
         .as_deref()
