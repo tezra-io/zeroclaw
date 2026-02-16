@@ -17,7 +17,7 @@ pub async fn generate_definition(description: &str, config: &Config) -> Result<A
         .join("\n");
 
     let provider = providers::create_resilient_chat_provider(
-        config.default_provider.as_deref().unwrap_or("openrouter"),
+        config.default_provider.as_deref().unwrap_or("anthropic"),
         config.api_key.as_deref(),
         &config.reliability,
     )?;
