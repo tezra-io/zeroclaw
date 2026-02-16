@@ -132,6 +132,22 @@ impl AnthropicProvider {
             anyhow::anyhow!("Anthropic API key not set. Set ANTHROPIC_API_KEY or edit config.toml.")
         })
     }
+
+    /// Apply auth header based on token type.
+    /// OAuth tokens (sk-ant-oat*) use `Authorization: Bearer`.
+    /// Standard API keys use `x-api-key`.
+    #[allow(clippy::unused_self)]
+    fn apply_auth(
+        &self,
+        builder: reqwest::RequestBuilder,
+        api_key: &str,
+    ) -> reqwest::RequestBuilder {
+        if api_key.starts_with("sk-ant-oat") {
+            builder.header("authorization", format!("Bearer {api_key}"))
+        } else {
+            builder.header("x-api-key", api_key)
+        }
+    }
 }
 
 /// Convert internal `ChatMessage` list to Anthropic's wire format.
@@ -280,15 +296,13 @@ impl Provider for AnthropicProvider {
             temperature,
         };
 
-        let response = self
+        let builder = self
             .client
             .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .json(&request)
-            .send()
-            .await?;
+            .json(&request);
+        let response = self.apply_auth(builder, api_key).send().await?;
 
         if !response.status().is_success() {
             let error = response.text().await?;
@@ -336,15 +350,13 @@ impl ChatProvider for AnthropicProvider {
             temperature,
         };
 
-        let response = self
+        let builder = self
             .client
             .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .json(&request)
-            .send()
-            .await?;
+            .json(&request);
+        let response = self.apply_auth(builder, api_key).send().await?;
 
         if !response.status().is_success() {
             let error = response.text().await?;
@@ -365,6 +377,35 @@ mod tests {
         let p = AnthropicProvider::new(Some("sk-ant-test123"));
         assert!(p.api_key.is_some());
         assert_eq!(p.api_key.as_deref(), Some("sk-ant-test123"));
+    }
+
+    #[test]
+    fn oauth_token_uses_bearer_header() {
+        let p = AnthropicProvider::new(Some("sk-ant-oat01-test123"));
+        let client = reqwest::Client::new();
+        let builder = client.post("https://api.anthropic.com/v1/messages");
+        let req = p
+            .apply_auth(builder, "sk-ant-oat01-test123")
+            .build()
+            .unwrap();
+        assert_eq!(
+            req.headers().get("authorization").unwrap(),
+            "Bearer sk-ant-oat01-test123"
+        );
+        assert!(req.headers().get("x-api-key").is_none());
+    }
+
+    #[test]
+    fn standard_key_uses_x_api_key_header() {
+        let p = AnthropicProvider::new(Some("sk-ant-api03-test123"));
+        let client = reqwest::Client::new();
+        let builder = client.post("https://api.anthropic.com/v1/messages");
+        let req = p
+            .apply_auth(builder, "sk-ant-api03-test123")
+            .build()
+            .unwrap();
+        assert_eq!(req.headers().get("x-api-key").unwrap(), "sk-ant-api03-test123");
+        assert!(req.headers().get("authorization").is_none());
     }
 
     #[test]
